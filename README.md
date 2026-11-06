@@ -1,4 +1,4 @@
-# Bijuli (बिजुली): day-ahead electricity demand forecasts for Nepal's grid, kept good for years
+# Electricity Demand Forecast (MLOps): day-ahead electricity demand forecasts for Nepal's grid, kept good for years
 
 [![Try it live](https://img.shields.io/badge/Try_it-live-2ea44f?style=for-the-badge)](https://bijuli-nepal-grid-forecast.onrender.com)
 
