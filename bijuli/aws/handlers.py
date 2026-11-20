@@ -131,7 +131,8 @@ def ingest(event, context=None):
 
 
 def forecast(event, context=None):
-    """Forecast all 24 hours of tomorrow with the champion, and with the shadow if there is one."""
+    """Forecast all 24 hours of tomorrow with the champion, with the shadow if there is one, and with
+    the previous champion while a rollback watch is open. Only the champion's forecast is served."""
     d = _day(event)
     target = d + timedelta(days=1)
     load = _clean_load([d - timedelta(days=i) for i in range(HISTORY_DAYS)])
@@ -148,11 +149,16 @@ def forecast(event, context=None):
         _emit("ForecastRefused", {"target_day": str(target), "reason": "no recent load data"})
         return {"target_day": str(target), "status": "refused"}
 
+    # During the rollback watch after a promotion, the previous champion keeps forecasting (never
+    # served) so the monitor can compare both models on the same days, as the local replay does.
+    roles = [("champion", _param(CHAMPION_PARAM)), ("shadow", _param(SHADOW_PARAM)),
+             ("previous", _state().get("previous"))]
     out = {}
-    for role, param in (("champion", CHAMPION_PARAM), ("shadow", SHADOW_PARAM)):
-        version = _param(param)
-        if not version:
+    seen = set()
+    for role, version in roles:
+        if not version or version in seen:
             continue
+        seen.add(version)
         pred = _load_model(version).predict(rows)
         item = {
             "target_day": str(target), "version": version, "role": role, "issued": str(d),

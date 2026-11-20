@@ -130,3 +130,39 @@ def test_shadow_is_promoted_then_rolled_back_by_the_monitor(aws, monkeypatch):
     actions = [x["action"] for x in decisions if x["action"] != "retrain"]
     assert actions[:2] == ["promote", "rollback"]
     assert boto3.client("ssm").get_parameter(Name=h.CHAMPION_PARAM)["Parameter"]["Value"] == "v001"
+
+
+def test_previous_champion_keeps_forecasting_through_the_rollback_watch(aws):
+    """With the real scorer, the rollback watch must compare both models on every day of the window,
+    not on the single forecast the old champion made before it was replaced."""
+    h, _ = aws
+    for d in pd.date_range("2024-02-01", "2024-02-10"):
+        h.ingest({"date": str(d.date())})
+    h._set_param(h.SHADOW_PARAM, "v002")
+    _day(h, "2024-02-11")  # champion v001 and shadow v002 both forecast 2024-02-12
+    # Promote v002 on 2024-02-11, exactly as monitor_daily records it.
+    h._set_param(h.CHAMPION_PARAM, "v002")
+    h._set_param(h.SHADOW_PARAM, None)
+    h._save_state({**h._state(), "previous": "v001", "promoted_on": "2024-02-11"})
+
+    table = boto3.resource("dynamodb").Table(h.FORECAST_TABLE)
+    for d in pd.date_range("2024-02-12", "2024-02-15"):
+        out, mon = _day(h, str(d.date()))
+        assert out["champion"]["version"] == "v002" and out["previous"]["version"] == "v001"
+        target = str((d + pd.Timedelta(days=1)).date())
+        item = table.get_item(Key={"target_day": target, "version": "v001"})["Item"]
+        assert item["role"] == "previous"
+        assert json.loads(h.api({"pathParameters": {"day": target}})["body"])["version"] == "v002"
+
+    # Day 5 of the watch closes it, kept or rolled back, after both models were scored on every day.
+    _day(h, "2024-02-16")
+    state = h._state()
+    assert state["previous"] is None
+    for day in pd.date_range("2024-02-12", "2024-02-15"):
+        assert str(day.date()) in state["scores"]["v001"]
+        assert str(day.date()) in state["scores"]["v002"]
+
+    # After the watch the old model stops forecasting.
+    champ = boto3.client("ssm").get_parameter(Name=h.CHAMPION_PARAM)["Parameter"]["Value"]
+    out, _ = _day(h, "2024-02-17")
+    assert set(out) - {"target_day", "status"} == {"champion"} and out["champion"]["version"] == champ
